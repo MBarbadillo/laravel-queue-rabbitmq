@@ -29,11 +29,13 @@ class RabbitMQQueue extends Queue implements QueueContract
      * @var AmqpContext
      */
     protected $context;
+    protected $config;
     protected $correlationId;
 
     public function __construct(AmqpContext $context, array $config)
     {
         $this->context = $context;
+        $this->config = $config;
 
         $this->queueName = $config['queue'] ?? $config['options']['queue']['name'];
         $this->queueOptions = $config['options']['queue'];
@@ -166,6 +168,37 @@ class RabbitMQQueue extends Queue implements QueueContract
             }
         } catch (\Throwable $exception) {
             $this->reportConnectionError('pop', $exception);
+
+            $factoryClass = Arr::get($this->config, 'factory_class', EnqueueAmqpConnectionFactory::class);
+
+            if (! class_exists($factoryClass) || ! (new \ReflectionClass($factoryClass))->implementsInterface(InteropAmqpConnectionFactory::class)) {
+                throw new \LogicException(sprintf('The factory_class option has to be valid class that implements "%s"', InteropAmqpConnectionFactory::class));
+            }
+
+            /** @var AmqpConnectionFactory $factory */
+            $factory = new $factoryClass([
+                'dsn' => Arr::get($this->config, 'dsn'),
+                'host' => Arr::get($this->config, 'host', '127.0.0.1'),
+                'port' => Arr::get($this->config, 'port', 5672),
+                'user' => Arr::get($this->config, 'login', 'guest'),
+                'pass' => Arr::get($this->config, 'password', 'guest'),
+                'vhost' => Arr::get($this->config, 'vhost', '/'),
+                'ssl_on' => Arr::get($this->config, 'ssl_params.ssl_on', false),
+                'ssl_verify' => Arr::get($this->config, 'ssl_params.verify_peer', true),
+                'ssl_cacert' => Arr::get($this->config, 'ssl_params.cafile'),
+                'ssl_cert' => Arr::get($this->config, 'ssl_params.local_cert'),
+                'ssl_key' => Arr::get($this->config, 'ssl_params.local_key'),
+                'ssl_passphrase' => Arr::get($this->config, 'ssl_params.passphrase'),
+            ]);
+
+            if ($factory instanceof DelayStrategyAware) {
+                $factory->setDelayStrategy(new RabbitMqDlxDelayStrategy());
+            }
+
+            /** @var AmqpContext $context */
+            $context = $factory->createContext();
+
+            $this->context = $context;
 
             return;
         }
